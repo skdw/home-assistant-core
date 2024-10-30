@@ -39,6 +39,26 @@ ONKYO_SELECT_OUTPUT_SCHEMA = vol.Schema(
 )
 SERVICE_SELECT_HDMI_OUTPUT = "onkyo_select_hdmi_output"
 
+ATTR_ISCP_COMMAND = "iscp_command"
+ATTR_ISCP_VALUE = "iscp_value"
+ONKYO_COMMAND_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_ISCP_COMMAND): cv.string,
+        vol.Required(ATTR_ISCP_VALUE): cv.string,
+    }
+)
+SERVICE_COMMAND = "onkyo_command"
+
+
+ATTR_ISCP_MESSAGE = "iscp_message"
+ONKYO_MESSAGE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_ISCP_MESSAGE): cv.string,
+    }
+)
+SERVICE_MESSAGE = "onkyo_message"
 
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register Onkyo services."""
@@ -60,10 +80,28 @@ async def async_register_services(hass: HomeAssistant) -> None:
         for target in targets:
             if service.service == SERVICE_SELECT_HDMI_OUTPUT:
                 await target.async_select_output(service.data[ATTR_HDMI_OUTPUT])
+            if service.service == SERVICE_COMMAND:
+                await target.async_command(service.data[ATTR_ISCP_COMMAND], service.data[ATTR_ISCP_VALUE])
+            if service.service == SERVICE_MESSAGE:
+                await target.async_message(service.data[ATTR_ISCP_MESSAGE])
 
     hass.services.async_register(
         MEDIA_PLAYER_DOMAIN,
         SERVICE_SELECT_HDMI_OUTPUT,
         async_service_handle,
         schema=ONKYO_SELECT_OUTPUT_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_COMMAND,
+        async_service_handle,
+        schema=ONKYO_COMMAND_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_MESSAGE,
+        async_service_handle,
+        schema=ONKYO_MESSAGE_SCHEMA,
     )

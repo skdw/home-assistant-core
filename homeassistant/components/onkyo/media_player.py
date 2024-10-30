@@ -7,6 +7,7 @@ import logging
 from typing import Any, Literal
 
 import voluptuous as vol
+from pyeiscp.protocol import command_to_packet
 
 from homeassistant.components.media_player import (
     PLATFORM_SCHEMA as MEDIA_PLAYER_PLATFORM_SCHEMA,
@@ -427,6 +428,18 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         """Set hdmi-out."""
         self._update_receiver("hdmi-output-selector", hdmi_output)
 
+    async def async_command(self, iscp_command: str, iscp_value: str) -> None:
+        """Send a command."""
+        self._update_receiver(iscp_command, iscp_value)
+
+    async def async_message(self, iscp_message: str) -> None:
+        """Send a raw message."""
+        try:
+            packet = command_to_packet(iscp_message)
+            self._receiver.conn.protocol.transport.write(packet)
+        except ValueError as e:
+            _LOGGER.error("Async message=[%s]: exception caught: %s", iscp_message, repr(e))
+
     async def async_play_media(
         self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
@@ -511,9 +524,11 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             return
 
         source_meaning = source.value_meaning
-        _LOGGER.error(
-            'Input source "%s" not in source list: %s', source_meaning, self.entity_id
-        )
+        if(source_meaning != 'MAIN SOURCE'): # TODO fix MAIN_SOURCE in sources
+            _LOGGER.error(
+                'Input source "%s" not in source list: %s', source_meaning, self.entity_id
+            )
+            _LOGGER.error('Source mapping "%s"', self._source_mapping)
         self._attr_source = source_meaning
 
     @callback
