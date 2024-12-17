@@ -99,7 +99,12 @@ ATTR_AUDIO_INFORMATION = "audio_information"
 ATTR_VIDEO_INFORMATION = "video_information"
 ATTR_VIDEO_OUT = "video_out"
 
+ATTR_NET_ARTIST = "net_artist"
+ATTR_NET_ALBUM = "net_album"
+ATTR_NET_TITLE = "net_title"
+
 AUDIO_VIDEO_INFORMATION_UPDATE_WAIT_TIME = 8
+NET_UPDATE_WAIT_TIME = 3
 
 AUDIO_INFORMATION_MAPPING = [
     "audio_input_port",
@@ -283,6 +288,8 @@ async def async_setup_entry(
 
     def update_callback(receiver: Receiver, message: tuple[str, str, Any]) -> None:
         zone, _, value = message
+        if zone == 'dock': # dock -> main hack
+            zone = 'main'
         entity = entities.get(zone)
         if entity is not None:
             if entity.enabled:
@@ -319,6 +326,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
     _supports_audio_info: bool = False
     _supports_video_info: bool = False
     _query_timer: asyncio.TimerHandle | None = None
+    _query_timer_net: asyncio.TimerHandle | None = None
 
     def __init__(
         self,
@@ -371,9 +379,11 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         self._receiver.conn.update_property(self._zone, propname, value)
 
     @callback
-    def _query_receiver(self, propname: str) -> None:
+    def _query_receiver(self, propname: str, zone=None) -> None:
         """Cause the receiver to send an update about a property."""
-        self._receiver.conn.query_property(self._zone, propname)
+        if zone is None:
+            zone = self._zone
+        self._receiver.conn.query_property(zone, propname)
 
     async def async_turn_on(self) -> None:
         """Turn the media player on."""
@@ -466,6 +476,9 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             self._query_receiver("listening-mode")
             self._query_receiver("audio-information")
             self._query_receiver("video-information")
+            self._query_receiver("net-usb-artist-name-info", "dock")
+            self._query_receiver("net-usb-album-name-info", "dock")
+            self._query_receiver("net-usb-title-name", "dock")
         else:
             self._query_receiver("muting")
             self._query_receiver("selector")
@@ -474,7 +487,16 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
     def process_update(self, update: tuple[str, str, Any]) -> None:
         """Store relevant updates so they can be queried later."""
         zone, command, value = update
+        if zone == 'dock':
+            if command == "net-usb-artist-name-info":
+                self._attr_media_artist = value
+            if command == "net-usb-album-name-info":
+                self._attr_media_album_name = value
+            if command == "net-usb-title-name":
+                self._attr_media_title = value
+            return
         if zone != self._zone:
+            _LOGGER.warning("Onkyo received debug command: %s = %s", command, str(value))
             return
 
         if command in ["system-power", "power"]:
@@ -513,6 +535,8 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             self._parse_video_information(value)
         elif command == "fl-display-information":
             self._query_av_info_delayed()
+
+        # _LOGGER.warning("Onkyo received debug command: %s = %s", command, str(value))
 
         self.async_write_ha_state()
 
@@ -580,4 +604,17 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
 
             self._query_timer = self.hass.loop.call_later(
                 AUDIO_VIDEO_INFORMATION_UPDATE_WAIT_TIME, _query_av_info
+            )
+
+        if self._zone == "main" and not self._query_timer_net:
+
+            @callback
+            def _query_net_info() -> None:
+                self._query_receiver("net-usb-artist-name-info", "dock")
+                self._query_receiver("net-usb-album-name-info", "dock")
+                self._query_receiver("net-usb-title-name", "dock")
+                self._query_timer_net = None
+
+            self._query_timer_net = self.hass.loop.call_later(
+                NET_UPDATE_WAIT_TIME, _query_net_info
             )
