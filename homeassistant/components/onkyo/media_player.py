@@ -488,6 +488,8 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         """Store relevant updates so they can be queried later."""
         zone, command, value = update
         if zone == 'dock':
+            if isinstance(value, tuple): # do not comma separate string to tuple
+                value = ', '.join(map(str, value))
             if command == "net-usb-artist-name-info":
                 self._attr_media_artist = value
             if command == "net-usb-album-name-info":
