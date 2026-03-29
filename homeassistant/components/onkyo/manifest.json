@@ -1,7 +1,7 @@
 {
-  "domain": "onkyo",
-  "name": "Onkyo",
-  "codeowners": ["@arturpragacz", "@eclair4151"],
+  "domain": "onkyo_skdw",
+  "name": "Onkyo SKDW",
+  "codeowners": ["@skdw", "@arturpragacz", "@eclair4151"],
   "config_flow": true,
   "dependencies": ["network"],
   "documentation": "https://www.home-assistant.io/integrations/onkyo",
@@ -9,7 +9,7 @@
   "iot_class": "local_push",
   "loggers": ["aioonkyo"],
   "quality_scale": "bronze",
-  "requirements": ["aioonkyo==0.4.0"],
+  "requirements": ["git+https://github.com/skdw/aioonkyo.git@tcl#aioonkyo"],
   "ssdp": [
     {
       "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
@@ -47,5 +47,6 @@
       "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:3",
       "manufacturer": "Pioneer"
     }
-  ]
+  ],
+  "version": "1.0.0"
 }

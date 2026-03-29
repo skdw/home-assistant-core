@@ -5,7 +5,7 @@ from typing import Literal
 
 from aioonkyo import HDMIOutputParam, InputSourceParam, ListeningModeParam, Zone
 
-DOMAIN = "onkyo"
+DOMAIN = "onkyo_skdw"
 
 DEVICE_INTERVIEW_TIMEOUT = 5
 DEVICE_DISCOVERY_TIMEOUT = 5
