@@ -70,6 +70,7 @@ ATTR_TEMPORARY_CHANNEL_LEVELS = "temporary_channel_levels"
 
 QUERY_STATE_DELAY = 4
 QUERY_AV_INFO_DELAY = 8
+QUERY_NET_INFO_DELAY = 3
 
 AUDIO_INFORMATION_MAPPING = [
     "audio_input_port",
@@ -158,6 +159,8 @@ async def async_setup_entry(
             return
 
         zone = message.zone
+        if zone == Zone.DOCK:
+            zone = Zone.MAIN
 
         entity = entities.get(zone)
         if entity is not None:
@@ -204,6 +207,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
 
     _query_state_task: asyncio.Task | None = None
     _query_av_info_task: asyncio.Task | None = None
+    _query_net_info_task: asyncio.Task | None = None
 
     def __init__(
         self,
@@ -289,6 +293,9 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             await self._manager.write(query.VideoInformation())
             await self._manager.write(query.ChannelMuting())
             await self._manager.write(query.TemporaryChannelLevel())
+            await self._manager.write(query.NetArtist())
+            await self._manager.write(query.NetAlbum())
+            await self._manager.write(query.NetTitle())
 
     def cancel_tasks(self) -> None:
         """Cancel the tasks."""
@@ -298,6 +305,9 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         if self._query_av_info_task is not None:
             self._query_av_info_task.cancel()
             self._query_av_info_task = None
+        if self._query_net_info_task is not None:
+            self._query_net_info_task.cancel()
+            self._query_net_info_task = None
 
     async def async_turn_on(self) -> None:
         """Turn the media player on."""
@@ -447,6 +457,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
                     self._attr_source = source_meaning
 
                 self._query_av_info_delayed()
+                self._query_net_info_delayed()
 
             case status.ListeningMode(param=sound_mode):
                 if not self._supports_sound_mode:
@@ -476,6 +487,15 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
 
             case status.TunerPreset(param=preset):
                 self._attr_extra_state_attributes[ATTR_PRESET] = preset
+
+            case status.NetArtist(value=artist):
+                self._attr_media_artist = artist
+
+            case status.NetAlbum(value=album):
+                self._attr_media_album_name = album
+
+            case status.NetTitle(value=title):
+                self._attr_media_title = title
 
             case status.AudioInformation():
                 self._supports_audio_info = True
@@ -560,3 +580,16 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             self._query_av_info_task = None
 
         self._query_av_info_task = asyncio.create_task(coro())
+
+    def _query_net_info_delayed(self) -> None:
+        if self._zone is not Zone.MAIN or self._query_net_info_task is not None:
+            return
+
+        async def coro() -> None:
+            await asyncio.sleep(QUERY_NET_INFO_DELAY)
+            await self._manager.write(query.NetArtist())
+            await self._manager.write(query.NetAlbum())
+            await self._manager.write(query.NetTitle())
+            self._query_net_info_task = None
+
+        self._query_net_info_task = asyncio.create_task(coro())
