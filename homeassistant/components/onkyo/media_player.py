@@ -66,6 +66,7 @@ ATTR_AUDIO_INFORMATION = "audio_information"
 ATTR_VIDEO_INFORMATION = "video_information"
 ATTR_VIDEO_OUT = "video_out"
 ATTR_MUTED_CHANNELS = "muted_channels"
+ATTR_TEMPORARY_CHANNEL_LEVELS = "temporary_channel_levels"
 
 QUERY_STATE_DELAY = 4
 QUERY_AV_INFO_DELAY = 8
@@ -199,6 +200,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
     _supports_audio_info: bool = False
     _supports_video_info: bool = False
     _supports_channel_muting: bool = False
+    _supports_temporary_channel_levels: bool = False
 
     _query_state_task: asyncio.Task | None = None
     _query_av_info_task: asyncio.Task | None = None
@@ -286,6 +288,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             await self._manager.write(query.AudioInformation())
             await self._manager.write(query.VideoInformation())
             await self._manager.write(query.ChannelMuting())
+            await self._manager.write(query.TemporaryChannelLevel())
 
     def cancel_tasks(self) -> None:
         """Cancel the tasks."""
@@ -381,6 +384,14 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             await self._manager.write(message)
         except (ConnectionError, TimeoutError, ValueError) as err:
             raise HomeAssistantError(f"Failed to set channel muting: {err}") from err
+
+    async def async_set_temporary_channel_level(self, channels: dict[str, float]) -> None:
+        """Set temporary channel levels."""
+        try:
+            message = command.TemporaryChannelLevel(**channels)
+            await self._manager.write(message)
+        except (ConnectionError, TimeoutError, ValueError) as err:
+            raise HomeAssistantError(f"Failed to set temporary channel level: {err}") from err
 
     async def async_play_media(
         self, media_type: MediaType | str, media_id: str, **kwargs: Any
@@ -492,6 +503,14 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
                     if getattr(message, channel, None) == status.ChannelMuting.Param.ON
                 ]
 
+            case status.TemporaryChannelLevel():
+                self._supports_temporary_channel_levels = True
+                self._attr_extra_state_attributes[ATTR_TEMPORARY_CHANNEL_LEVELS] = {
+                    channel.value: getattr(message, channel.value)
+                    for channel in Channel
+                    if getattr(message, channel.value, None) is not None
+                }
+
             case status.FLDisplay():
                 self._query_av_info_delayed()
 
@@ -506,6 +525,9 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             case status.NotAvailable(kind=Kind.CHANNEL_MUTING):
                 # Not available right now, but still supported
                 self._supports_channel_muting = True
+
+            case status.NotAvailable(kind=Kind.TEMPORARY_CHANNEL_LEVEL):
+                self._supports_temporary_channel_levels = True
 
         self.async_write_ha_state()
 

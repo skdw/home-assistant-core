@@ -43,6 +43,19 @@ ONKYO_SET_CHANNEL_MUTING_SCHEMA = vol.Schema(
 SERVICE_SET_CHANNEL_MUTING = "onkyo_set_channel_muting"
 
 
+ATTR_TEMPORARY_CHANNEL_LEVEL = "channel_levels"
+ONKYO_SET_TEMPORARY_CHANNEL_LEVEL_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_TEMPORARY_CHANNEL_LEVEL): vol.Schema(
+            {
+                vol.In(VALID_CHANNELS): vol.All(vol.Coerce(int), vol.Range(min=-16, max=16)),
+            }
+        )
+    }
+)
+SERVICE_SET_TEMPORARY_CHANNEL_LEVEL = "onkyo_set_temporary_channel_level"
+
 @callback
 def async_setup_services(hass: HomeAssistant) -> None:
     """Register Onkyo services."""
@@ -68,6 +81,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 await target.async_set_channel_muting(
                     service.data[ATTR_MUTING_CHANNELS]
                 )
+            if service.service == SERVICE_SET_TEMPORARY_CHANNEL_LEVEL:
+                await target.async_set_temporary_channel_level(
+                    service.data[ATTR_TEMPORARY_CHANNEL_LEVEL]
+                )
 
     hass.services.async_register(
         MEDIA_PLAYER_DOMAIN,
@@ -81,4 +98,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_SET_CHANNEL_MUTING,
         async_service_handle,
         schema=ONKYO_SET_CHANNEL_MUTING_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_SET_TEMPORARY_CHANNEL_LEVEL,
+        async_service_handle,
+        schema=ONKYO_SET_TEMPORARY_CHANNEL_LEVEL_SCHEMA,
     )
