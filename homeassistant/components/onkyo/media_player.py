@@ -421,6 +421,34 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         message = command.TunerPreset(self._zone, int(media_id))
         await self._manager.write(message)
 
+    async def async_set_tuner_preset(self, preset: int) -> None:
+        """Set tuner preset."""
+        message = command.TunerPreset(self._zone, preset)
+        await self._manager.write(message)
+
+    async def async_set_tv_operation(self, operation: str) -> None:
+        """Set TV operation."""
+        try:
+            # Try to find by meaning (case-insensitive)
+            param = None
+            search_value = operation.upper().replace(" ", "_")
+            for member in command.TVOperation.Param:
+                if member.name == search_value or any(
+                    search_value == m.upper() for m in member.all_meanings
+                ):
+                    param = member
+                    break
+            if param is None:
+                # Try by value
+                param = command.TVOperation.Param(operation)
+
+            message = command.TVOperation(param)
+            await self._manager.write(message)
+        except (ValueError, KeyError) as err:
+            raise ServiceValidationError(
+                f"Invalid operation '{operation}' for TV operation: {err}"
+            ) from err
+
     def process_update(self, message: status.Known) -> None:
         """Process update."""
         match message:

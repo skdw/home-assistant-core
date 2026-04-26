@@ -59,6 +59,25 @@ ONKYO_SET_TEMPORARY_CHANNEL_LEVEL_SCHEMA = vol.Schema(
 SERVICE_SET_TEMPORARY_CHANNEL_LEVEL = "onkyo_set_temporary_channel_level"
 
 
+ATTR_PRESET = "preset"
+ONKYO_SET_TUNER_PRESET_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_PRESET): vol.All(vol.Coerce(int), vol.Range(min=1, max=40)),
+    }
+)
+SERVICE_SET_TUNER_PRESET = "onkyo_set_tuner_preset"
+
+ATTR_OPERATION = "operation"
+ONKYO_SET_TV_OPERATION_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_OPERATION): cv.string,
+    }
+)
+SERVICE_SET_TV_OPERATION = "onkyo_set_tv_operation"
+
+
 @callback
 def async_setup_services(hass: HomeAssistant) -> None:
     """Register Onkyo services."""
@@ -88,6 +107,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 await target.async_set_temporary_channel_level(
                     service.data[ATTR_TEMPORARY_CHANNEL_LEVEL]
                 )
+            if service.service == SERVICE_SET_TUNER_PRESET:
+                await target.async_set_tuner_preset(service.data[ATTR_PRESET])
+            if service.service == SERVICE_SET_TV_OPERATION:
+                await target.async_set_tv_operation(service.data[ATTR_OPERATION])
 
     hass.services.async_register(
         MEDIA_PLAYER_DOMAIN,
@@ -108,4 +131,18 @@ def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_SET_TEMPORARY_CHANNEL_LEVEL,
         async_service_handle,
         schema=ONKYO_SET_TEMPORARY_CHANNEL_LEVEL_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_SET_TUNER_PRESET,
+        async_service_handle,
+        schema=ONKYO_SET_TUNER_PRESET_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_SET_TV_OPERATION,
+        async_service_handle,
+        schema=ONKYO_SET_TV_OPERATION_SCHEMA,
     )
