@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from aioonkyo import command
 import voluptuous as vol
 
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
@@ -10,7 +11,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import LEGACY_REV_HDMI_OUTPUT_MAPPING
-from .media_player import DATA_MP_ENTITIES, OnkyoMediaPlayer
+from .media_player import DATA_MP_ENTITIES, Channel, OnkyoMediaPlayer
 
 ATTR_HDMI_OUTPUT = "hdmi_output"
 ONKYO_SELECT_OUTPUT_SCHEMA = vol.Schema(
@@ -20,6 +21,61 @@ ONKYO_SELECT_OUTPUT_SCHEMA = vol.Schema(
     }
 )
 SERVICE_SELECT_HDMI_OUTPUT = "onkyo_select_hdmi_output"
+
+
+def _coerce_muting_param(value: bool) -> command.ChannelMuting.Param:
+    """Translate UI booleans into aioonkyo MutingParam Enums."""
+    return command.ChannelMuting.Param.ON if value else command.ChannelMuting.Param.OFF
+
+
+ATTR_MUTING_CHANNELS = "channels"
+VALID_CHANNELS = [channel.value for channel in Channel]
+ONKYO_SET_CHANNEL_MUTING_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_MUTING_CHANNELS): vol.Schema(
+            {
+                vol.In(VALID_CHANNELS): vol.All(cv.boolean, _coerce_muting_param),
+            }
+        ),
+    }
+)
+SERVICE_SET_CHANNEL_MUTING = "onkyo_set_channel_muting"
+
+
+ATTR_TEMPORARY_CHANNEL_LEVEL = "channel_levels"
+ONKYO_SET_TEMPORARY_CHANNEL_LEVEL_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_TEMPORARY_CHANNEL_LEVEL): vol.Schema(
+            {
+                vol.In(VALID_CHANNELS): vol.All(
+                    vol.Coerce(int), vol.Range(min=-16, max=16)
+                ),
+            }
+        ),
+    }
+)
+SERVICE_SET_TEMPORARY_CHANNEL_LEVEL = "onkyo_set_temporary_channel_level"
+
+
+ATTR_PRESET = "preset"
+ONKYO_SET_TUNER_PRESET_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_PRESET): vol.All(vol.Coerce(int), vol.Range(min=1, max=40)),
+    }
+)
+SERVICE_SET_TUNER_PRESET = "onkyo_set_tuner_preset"
+
+ATTR_OPERATION = "operation"
+ONKYO_SET_TV_OPERATION_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_OPERATION): cv.string,
+    }
+)
+SERVICE_SET_TV_OPERATION = "onkyo_set_tv_operation"
 
 
 @callback
@@ -43,10 +99,50 @@ def async_setup_services(hass: HomeAssistant) -> None:
         for target in targets:
             if service.service == SERVICE_SELECT_HDMI_OUTPUT:
                 await target.async_select_output(service.data[ATTR_HDMI_OUTPUT])
+            if service.service == SERVICE_SET_CHANNEL_MUTING:
+                await target.async_set_channel_muting(
+                    service.data[ATTR_MUTING_CHANNELS]
+                )
+            if service.service == SERVICE_SET_TEMPORARY_CHANNEL_LEVEL:
+                await target.async_set_temporary_channel_level(
+                    service.data[ATTR_TEMPORARY_CHANNEL_LEVEL]
+                )
+            if service.service == SERVICE_SET_TUNER_PRESET:
+                await target.async_set_tuner_preset(service.data[ATTR_PRESET])
+            if service.service == SERVICE_SET_TV_OPERATION:
+                await target.async_set_tv_operation(service.data[ATTR_OPERATION])
 
     hass.services.async_register(
         MEDIA_PLAYER_DOMAIN,
         SERVICE_SELECT_HDMI_OUTPUT,
         async_service_handle,
         schema=ONKYO_SELECT_OUTPUT_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_SET_CHANNEL_MUTING,
+        async_service_handle,
+        schema=ONKYO_SET_CHANNEL_MUTING_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_SET_TEMPORARY_CHANNEL_LEVEL,
+        async_service_handle,
+        schema=ONKYO_SET_TEMPORARY_CHANNEL_LEVEL_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_SET_TUNER_PRESET,
+        async_service_handle,
+        schema=ONKYO_SET_TUNER_PRESET_SCHEMA,
+    )
+
+    hass.services.async_register(
+        MEDIA_PLAYER_DOMAIN,
+        SERVICE_SET_TV_OPERATION,
+        async_service_handle,
+        schema=ONKYO_SET_TV_OPERATION_SCHEMA,
     )

@@ -9,20 +9,20 @@
     },
     "error": {
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
-      "empty_input_source_list": "[%key:component::onkyo::options::error::empty_input_source_list%]",
-      "empty_listening_mode_list": "[%key:component::onkyo::options::error::empty_listening_mode_list%]",
+      "empty_input_source_list": "[%key:component::onkyo_skdw::options::error::empty_input_source_list%]",
+      "empty_listening_mode_list": "[%key:component::onkyo_skdw::options::error::empty_listening_mode_list%]",
       "unknown": "[%key:common::config_flow::error::unknown%]"
     },
     "step": {
       "configure_receiver": {
         "data": {
-          "input_sources": "[%key:component::onkyo::options::step::init::data::input_sources%]",
-          "listening_modes": "[%key:component::onkyo::options::step::init::data::listening_modes%]",
+          "input_sources": "[%key:component::onkyo_skdw::options::step::init::data::input_sources%]",
+          "listening_modes": "[%key:component::onkyo_skdw::options::step::init::data::listening_modes%]",
           "volume_resolution": "Volume resolution"
         },
         "data_description": {
-          "input_sources": "[%key:component::onkyo::options::step::init::data_description::input_sources%]",
-          "listening_modes": "[%key:component::onkyo::options::step::init::data_description::listening_modes%]",
+          "input_sources": "[%key:component::onkyo_skdw::options::step::init::data_description::input_sources%]",
+          "listening_modes": "[%key:component::onkyo_skdw::options::step::init::data_description::listening_modes%]",
           "volume_resolution": "Number of steps it takes for the receiver to go from the lowest to the highest possible volume."
         },
         "description": "Configure {name}"
@@ -89,6 +89,18 @@
           }
         }
       }
+    }
+  },
+  "services": {
+    "onkyo_set_channel_muting": {
+      "description": "Mutes or unmutes specific audio channels independently.",
+      "fields": {
+        "channels": {
+          "description": "Dictionary of channels and their muting state (true to mute, false to unmute).",
+          "name": "Channels"
+        }
+      },
+      "name": "Set channel muting"
     }
   }
 }

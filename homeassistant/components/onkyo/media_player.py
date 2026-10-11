@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+from datetime import timedelta
+from enum import StrEnum
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 from aioonkyo import Code, Kind, Status, Zone, command, query, status
@@ -13,10 +17,12 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,
+    RepeatMode,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 from homeassistant.util.hass_dict import HassKey
 
 from .const import (
@@ -53,6 +59,16 @@ SUPPORTED_FEATURES_VOLUME = (
     | MediaPlayerEntityFeature.VOLUME_MUTE
     | MediaPlayerEntityFeature.VOLUME_STEP
 )
+SUPPORTED_FEATURES_NET = (
+    MediaPlayerEntityFeature.PLAY
+    | MediaPlayerEntityFeature.PAUSE
+    | MediaPlayerEntityFeature.STOP
+    | MediaPlayerEntityFeature.NEXT_TRACK
+    | MediaPlayerEntityFeature.PREVIOUS_TRACK
+    | MediaPlayerEntityFeature.SEEK
+    | MediaPlayerEntityFeature.SHUFFLE_SET
+    | MediaPlayerEntityFeature.REPEAT_SET
+)
 
 PLAYABLE_SOURCES = (
     InputSource.FM,
@@ -64,9 +80,12 @@ ATTR_PRESET = "preset"
 ATTR_AUDIO_INFORMATION = "audio_information"
 ATTR_VIDEO_INFORMATION = "video_information"
 ATTR_VIDEO_OUT = "video_out"
+ATTR_MUTED_CHANNELS = "muted_channels"
+ATTR_TEMPORARY_CHANNEL_LEVELS = "temporary_channel_levels"
 
 QUERY_STATE_DELAY = 4
 QUERY_AV_INFO_DELAY = 8
+QUERY_NET_INFO_DELAY = 3
 
 AUDIO_INFORMATION_MAPPING = [
     "audio_input_port",
@@ -93,6 +112,24 @@ VIDEO_INFORMATION_MAPPING = [
     "picture_mode",
     "input_hdr",
 ]
+
+
+class Channel(StrEnum):
+    """Audio channel."""
+
+    FRONT_LEFT = "front_left"
+    FRONT_RIGHT = "front_right"
+    CENTER = "center"
+    SURROUND_LEFT = "surround_left"
+    SURROUND_RIGHT = "surround_right"
+    SURROUND_BACK_LEFT = "surround_back_left"
+    SURROUND_BACK_RIGHT = "surround_back_right"
+    SUBWOOFER = "subwoofer"
+    HEIGHT_1_LEFT = "height_1_left"
+    HEIGHT_1_RIGHT = "height_1_right"
+    HEIGHT_2_LEFT = "height_2_left"
+    HEIGHT_2_RIGHT = "height_2_right"
+    SUBWOOFER_2 = "subwoofer_2"
 
 
 async def async_setup_entry(
@@ -137,6 +174,8 @@ async def async_setup_entry(
             return
 
         zone = message.zone
+        if zone == Zone.DOCK:
+            zone = Zone.MAIN
 
         entity = entities.get(zone)
         if entity is not None:
@@ -167,6 +206,28 @@ async def async_setup_entry(
     manager.callbacks.update.append(update_callback)
 
 
+def _url_hash(url: str) -> str:
+    """Hash a URL."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _parse_net_time(value: str | None) -> float | None:
+    """Parse NET time in MM:SS or HH:MM:SS format to seconds."""
+    if value is None:
+        return None
+    parts = value.split(":")
+    if len(parts) not in (2, 3) or not all(part.isdigit() for part in parts):
+        return None
+    numbers = [int(part) for part in parts]
+    if len(numbers) == 2:
+        minutes, seconds = numbers
+        return float(minutes * 60 + seconds) if seconds < 60 else None
+    hours, minutes, seconds = numbers
+    if minutes >= 60 or seconds >= 60:
+        return None
+    return float(hours * 3600 + minutes * 60 + seconds)
+
+
 class OnkyoMediaPlayer(MediaPlayerEntity):
     """Onkyo Receiver Media Player (one per each zone)."""
 
@@ -178,9 +239,61 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
     _supports_sound_mode: bool | None = None
     _supports_audio_info: bool = False
     _supports_video_info: bool = False
+    _supports_channel_muting: bool = False
+    _supports_temporary_channel_levels: bool = False
 
     _query_state_task: asyncio.Task | None = None
     _query_av_info_task: asyncio.Task | None = None
+    _query_net_info_task: asyncio.Task | None = None
+
+    @cached_property
+    def media_image_url(self) -> str | None:
+        """Image url of current playing media."""
+        return self._attr_media_image_url
+
+    @cached_property
+    def media_image_remotely_accessible(self) -> bool:
+        """If the image url is remotely accessible."""
+        return self._attr_media_image_remotely_accessible
+
+    @property
+    def media_image_hash(self) -> str | None:
+        """Hash value for media image."""
+        if hasattr(self, "_attr_media_image_hash"):
+            return self._attr_media_image_hash
+
+        if (url := self.media_image_url) is not None:
+            return _url_hash(url)
+
+        return None
+
+    async def async_get_media_image(self) -> tuple[bytes | None, str | None]:
+        """Fetch media image of current playing image."""
+        if (url := self.media_image_url) is None:
+            return None, None
+
+        return await self._async_fetch_image_from_cache(url)
+
+    def _update_media_image_url(self) -> None:
+        """Set a cache-busted URL to the receiver's current album art."""
+        metadata = (
+            self._attr_media_artist,
+            self._attr_media_album_name,
+            self._attr_media_title,
+        )
+        if any(metadata):
+            cache_key = _url_hash("\0".join(value or "" for value in metadata))
+            image_url = f"http://{self._manager.info.ip}/album_art.cgi?t={cache_key}"
+        else:
+            image_url = None
+
+        if image_url == self._attr_media_image_url:
+            return
+
+        self._attr_media_image_url = image_url
+        self._attr_media_image_remotely_accessible = False
+        self.__dict__.pop("media_image_url", None)
+        self.__dict__.pop("media_image_remotely_accessible", None)
 
     def __init__(
         self,
@@ -236,6 +349,19 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             # To be detected later:
             self._supports_sound_mode = False
 
+        self._attr_media_title = None
+        self._attr_media_artist = None
+        self._attr_media_album_name = None
+        self._attr_media_image_url = None
+        self._attr_media_image_remotely_accessible = False
+        self._attr_media_position = None
+        self._attr_media_position_updated_at = None
+        self._attr_media_duration = None
+        self._attr_media_channel = None
+        self._attr_media_track = None
+        self._attr_shuffle = None
+        self._attr_repeat = None
+
         self._attr_extra_state_attributes = {}
 
     async def async_added_to_hass(self) -> None:
@@ -264,6 +390,15 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             await self._manager.write(query.HDMIOutput())
             await self._manager.write(query.AudioInformation())
             await self._manager.write(query.VideoInformation())
+            await self._manager.write(query.ChannelMuting())
+            await self._manager.write(query.TemporaryChannelLevel())
+            await self._manager.write(query.NetArtist())
+            await self._manager.write(query.NetAlbum())
+            await self._manager.write(query.NetTitle())
+            await self._manager.write(query.NetMenu())
+            await self._manager.write(query.NetPlayStatus())
+            await self._manager.write(query.NetTime())
+            await self._manager.write(query.NetTrack())
 
     def cancel_tasks(self) -> None:
         """Cancel the tasks."""
@@ -273,6 +408,9 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         if self._query_av_info_task is not None:
             self._query_av_info_task.cancel()
             self._query_av_info_task = None
+        if self._query_net_info_task is not None:
+            self._query_net_info_task.cancel()
+            self._query_net_info_task = None
 
     async def async_turn_on(self) -> None:
         """Turn the media player on."""
@@ -352,6 +490,26 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         message = command.HDMIOutput(self._rev_hdmi_output_mapping[hdmi_output])
         await self._manager.write(message)
 
+    async def async_set_channel_muting(self, muting_channels: dict) -> None:
+        """Set channel muting."""
+        try:
+            message = command.ChannelMuting(**muting_channels)
+            await self._manager.write(message)
+        except (ConnectionError, TimeoutError, ValueError) as err:
+            raise HomeAssistantError(f"Failed to set channel muting: {err}") from err
+
+    async def async_set_temporary_channel_level(
+        self, channels: dict[str, float]
+    ) -> None:
+        """Set temporary channel levels."""
+        try:
+            message = command.TemporaryChannelLevel(**channels)
+            await self._manager.write(message)
+        except (ConnectionError, TimeoutError, ValueError) as err:
+            raise HomeAssistantError(
+                f"Failed to set temporary channel level: {err}"
+            ) from err
+
     async def async_play_media(
         self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
@@ -366,13 +524,41 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         message = command.TunerPreset(self._zone, int(media_id))
         await self._manager.write(message)
 
+    async def async_set_tuner_preset(self, preset: int) -> None:
+        """Set tuner preset."""
+        message = command.TunerPreset(self._zone, preset)
+        await self._manager.write(message)
+
+    async def async_set_tv_operation(self, operation: str) -> None:
+        """Set TV operation."""
+        try:
+            # Try to find by meaning (case-insensitive)
+            param = None
+            search_value = operation.upper().replace(" ", "_")
+            for member in command.TVOperation.Param:
+                if member.name == search_value or any(
+                    search_value == m.upper() for m in member.all_meanings
+                ):
+                    param = member
+                    break
+            if param is None:
+                # Try by value
+                param = command.TVOperation.Param(operation)
+
+            message = command.TVOperation(param)
+            await self._manager.write(message)
+        except (ValueError, KeyError) as err:
+            raise ServiceValidationError(
+                f"Invalid operation '{operation}' for TV operation: {err}"
+            ) from err
+
     def process_update(self, message: status.Known) -> None:
         """Process update."""
         match message:
             case status.Power(param=status.Power.Param.ON):
-                if self.state != MediaPlayerState.ON:
+                if self.state in (None, MediaPlayerState.OFF):
                     self._query_state_delayed()
-                self._attr_state = MediaPlayerState.ON
+                    self._attr_state = MediaPlayerState.ON
             case status.Power(param=status.Power.Param.STANDBY):
                 self._attr_state = MediaPlayerState.OFF
 
@@ -391,7 +577,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
 
             case status.InputSource(param=source):
                 if source in self._source_mapping:
-                    self._attr_source = self._source_mapping[source]
+                    source_name = self._source_mapping[source]
                 else:
                     source_meaning = get_meaning(source)
                     _LOGGER.warning(
@@ -399,9 +585,39 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
                         source_meaning,
                         self.entity_id,
                     )
-                    self._attr_source = source_meaning
+                    source_name = source_meaning
+
+                if source_name != self._attr_source:
+                    self._attr_media_artist = None
+                    self._attr_media_album_name = None
+                    self._attr_media_title = None
+                    self._attr_media_channel = None
+                    self._attr_media_track = None
+                    self._attr_media_position = None
+                    self._attr_media_position_updated_at = None
+                    self._attr_media_duration = None
+                    self._attr_shuffle = None
+                    self._attr_repeat = None
+                    self._update_media_image_url()
+                self._attr_source = source_name
+                source_param = self._rev_source_mapping.get(source_name)
+                if (
+                    source_param != InputSource.NETWORK
+                    and self.state
+                    in (
+                        MediaPlayerState.PLAYING,
+                        MediaPlayerState.PAUSED,
+                        MediaPlayerState.IDLE,
+                    )
+                ):
+                    self._attr_state = MediaPlayerState.ON
+                if self._zone is Zone.MAIN and source_param == InputSource.NETWORK:
+                    self._attr_supported_features |= SUPPORTED_FEATURES_NET
+                else:
+                    self._attr_supported_features &= ~SUPPORTED_FEATURES_NET
 
                 self._query_av_info_delayed()
+                self._query_net_info_delayed()
 
             case status.ListeningMode(param=sound_mode):
                 if not self._supports_sound_mode:
@@ -432,6 +648,45 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             case status.TunerPreset(param=preset):
                 self._attr_extra_state_attributes[ATTR_PRESET] = preset
 
+            case status.NetArtist(value=artist):
+                self._attr_media_artist = artist
+                self._update_media_image_url()
+
+            case status.NetAlbum(value=album):
+                self._attr_media_album_name = album
+                self._update_media_image_url()
+
+            case status.NetTitle(value=title):
+                self._attr_media_title = title
+                self._update_media_image_url()
+
+            case status.NetMenu(service=service):
+                self._attr_media_channel = service
+
+            case status.NetPlayStatus() as net_status:
+                if net_status.playback_state == "playing":
+                    self._attr_state = MediaPlayerState.PLAYING
+                elif net_status.playback_state == "paused":
+                    self._attr_state = MediaPlayerState.PAUSED
+                elif net_status.playback_state in ("stopped", "ended"):
+                    self._attr_state = MediaPlayerState.IDLE
+                if net_status.repeat_mode is not None:
+                    self._attr_repeat = (
+                        RepeatMode.ALL
+                        if net_status.repeat_mode == "folder"
+                        else net_status.repeat_mode
+                    )
+                if net_status.shuffle_mode is not None:
+                    self._attr_shuffle = net_status.shuffle_mode != "off"
+
+            case status.NetTime() as net_time:
+                self._attr_media_position = _parse_net_time(net_time.elapsed_time)
+                self._attr_media_duration = _parse_net_time(net_time.track_time)
+                self._attr_media_position_updated_at = dt_util.utcnow()
+
+            case status.NetTrack(track_number=track_number):
+                self._attr_media_track = track_number
+
             case status.AudioInformation():
                 self._supports_audio_info = True
                 audio_information = {}
@@ -454,6 +709,22 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
                     video_information
                 )
 
+            case status.ChannelMuting():
+                self._supports_channel_muting = True
+                self._attr_extra_state_attributes[ATTR_MUTED_CHANNELS] = [
+                    channel.value
+                    for channel in Channel
+                    if getattr(message, channel, None) == status.ChannelMuting.Param.ON
+                ]
+
+            case status.TemporaryChannelLevel():
+                self._supports_temporary_channel_levels = True
+                self._attr_extra_state_attributes[ATTR_TEMPORARY_CHANNEL_LEVELS] = {
+                    channel.value: getattr(message, channel.value)
+                    for channel in Channel
+                    if getattr(message, channel.value, None) is not None
+                }
+
             case status.FLDisplay():
                 self._query_av_info_delayed()
 
@@ -464,6 +735,13 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             case status.NotAvailable(kind=Kind.VIDEO_INFORMATION):
                 # Not available right now, but still supported
                 self._supports_video_info = True
+
+            case status.NotAvailable(kind=Kind.CHANNEL_MUTING):
+                # Not available right now, but still supported
+                self._supports_channel_muting = True
+
+            case status.NotAvailable(kind=Kind.TEMPORARY_CHANNEL_LEVEL):
+                self._supports_temporary_channel_levels = True
 
         self.async_write_ha_state()
 
@@ -492,3 +770,65 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
             self._query_av_info_task = None
 
         self._query_av_info_task = asyncio.create_task(coro())
+
+    def _query_net_info_delayed(self) -> None:
+        if self._zone is not Zone.MAIN or self._query_net_info_task is not None:
+            return
+
+        async def coro() -> None:
+            await asyncio.sleep(QUERY_NET_INFO_DELAY)
+            await self._manager.write(query.NetArtist())
+            await self._manager.write(query.NetAlbum())
+            await self._manager.write(query.NetTitle())
+            await self._manager.write(query.NetMenu())
+            await self._manager.write(query.NetPlayStatus())
+            await self._manager.write(query.NetTime())
+            await self._manager.write(query.NetTrack())
+            self._query_net_info_task = None
+
+        self._query_net_info_task = asyncio.create_task(coro())
+
+    async def _async_net_control(self, operation: command.NetControl.Param) -> None:
+        """Send a NET/USB transport operation."""
+        await self._manager.write(command.NetControl(operation))
+
+    async def async_media_play(self) -> None:
+        """Resume NET playback."""
+        await self._async_net_control(command.NetControl.Param.PLAY)
+
+    async def async_media_pause(self) -> None:
+        """Pause NET playback."""
+        await self._async_net_control(command.NetControl.Param.PAUSE)
+
+    async def async_media_stop(self) -> None:
+        """Stop NET playback."""
+        await self._async_net_control(command.NetControl.Param.STOP)
+
+    async def async_media_next_track(self) -> None:
+        """Skip to the next NET track."""
+        await self._async_net_control(command.NetControl.Param.TRACK_UP)
+
+    async def async_media_previous_track(self) -> None:
+        """Skip to the previous NET track."""
+        await self._async_net_control(command.NetControl.Param.TRACK_DOWN)
+
+    async def async_media_seek(self, position: float) -> None:
+        """Seek within the current NET track."""
+        await self._manager.write(
+            command.NetTimeSeek(time=timedelta(seconds=max(0, position)))
+        )
+
+    async def async_set_shuffle(self, shuffle: bool) -> None:
+        """Set NET shuffle mode."""
+        if self._attr_shuffle != shuffle:
+            await self._async_net_control(command.NetControl.Param.RANDOM)
+
+    async def async_set_repeat(self, repeat: RepeatMode) -> None:
+        """Set NET repeat mode."""
+        desired = str(repeat)
+        current = self._attr_repeat
+        if desired != current:
+            # NTC REPEAT advances the receiver's repeat mode; the status query
+            # keeps HA synchronized with the receiver's resulting mode.
+            await self._async_net_control(command.NetControl.Param.REPEAT)
+            await self._manager.write(query.NetPlayStatus())
