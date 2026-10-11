@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from enum import StrEnum
+import hashlib
 import logging
+from enum import StrEnum
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 from aioonkyo import Code, Kind, Status, Zone, command, query, status
-
 from homeassistant.components.media_player import (
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
@@ -191,6 +192,11 @@ async def async_setup_entry(
     manager.callbacks.update.append(update_callback)
 
 
+def _url_hash(url: str) -> str:
+    """Hash a URL."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
 class OnkyoMediaPlayer(MediaPlayerEntity):
     """Onkyo Receiver Media Player (one per each zone)."""
 
@@ -208,6 +214,55 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
     _query_state_task: asyncio.Task | None = None
     _query_av_info_task: asyncio.Task | None = None
     _query_net_info_task: asyncio.Task | None = None
+
+    @cached_property
+    def media_image_url(self) -> str | None:
+        """Image url of current playing media."""
+        return self._attr_media_image_url
+
+    @cached_property
+    def media_image_remotely_accessible(self) -> bool:
+        """If the image url is remotely accessible."""
+        return self._attr_media_image_remotely_accessible
+
+    @property
+    def media_image_hash(self) -> str | None:
+        """Hash value for media image."""
+        if hasattr(self, "_attr_media_image_hash"):
+            return self._attr_media_image_hash
+
+        if (url := self.media_image_url) is not None:
+            return _url_hash(url)
+
+        return None
+
+    async def async_get_media_image(self) -> tuple[bytes | None, str | None]:
+        """Fetch media image of current playing image."""
+        if (url := self.media_image_url) is None:
+            return None, None
+
+        return await self._async_fetch_image_from_cache(url)
+
+    def _update_media_image_url(self) -> None:
+        """Set a cache-busted URL to the receiver's current album art."""
+        metadata = (
+            self._attr_media_artist,
+            self._attr_media_album_name,
+            self._attr_media_title,
+        )
+        if any(metadata):
+            cache_key = _url_hash("\0".join(value or "" for value in metadata))
+            image_url = f"http://{self._manager.info.ip}/album_art.cgi?t={cache_key}"
+        else:
+            image_url = None
+
+        if image_url == self._attr_media_image_url:
+            return
+
+        self._attr_media_image_url = image_url
+        self._attr_media_image_remotely_accessible = False
+        self.__dict__.pop("media_image_url", None)
+        self.__dict__.pop("media_image_remotely_accessible", None)
 
     def __init__(
         self,
@@ -262,6 +317,10 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         elif Code.get_from_kind_zone(Kind.LISTENING_MODE, zone) is not None:
             # To be detected later:
             self._supports_sound_mode = False
+
+        self._attr_media_title = None
+        self._attr_media_image_url = None
+        self._attr_media_image_remotely_accessible = False
 
         self._attr_extra_state_attributes = {}
 
@@ -474,7 +533,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
 
             case status.InputSource(param=source):
                 if source in self._source_mapping:
-                    self._attr_source = self._source_mapping[source]
+                    source_name = self._source_mapping[source]
                 else:
                     source_meaning = get_meaning(source)
                     _LOGGER.warning(
@@ -482,7 +541,14 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
                         source_meaning,
                         self.entity_id,
                     )
-                    self._attr_source = source_meaning
+                    source_name = source_meaning
+
+                if source_name != self._attr_source:
+                    self._attr_media_artist = None
+                    self._attr_media_album_name = None
+                    self._attr_media_title = None
+                    self._update_media_image_url()
+                self._attr_source = source_name
 
                 self._query_av_info_delayed()
                 self._query_net_info_delayed()
@@ -518,12 +584,15 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
 
             case status.NetArtist(value=artist):
                 self._attr_media_artist = artist
+                self._update_media_image_url()
 
             case status.NetAlbum(value=album):
                 self._attr_media_album_name = album
+                self._update_media_image_url()
 
             case status.NetTitle(value=title):
                 self._attr_media_title = title
+                self._update_media_image_url()
 
             case status.AudioInformation():
                 self._supports_audio_info = True
