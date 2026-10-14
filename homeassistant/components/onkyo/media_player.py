@@ -664,12 +664,15 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
                 self._attr_media_channel = service
 
             case status.NetPlayStatus() as net_status:
-                if net_status.playback_state == "playing":
-                    self._attr_state = MediaPlayerState.PLAYING
-                elif net_status.playback_state == "paused":
-                    self._attr_state = MediaPlayerState.PAUSED
-                elif net_status.playback_state in ("stopped", "ended"):
-                    self._attr_state = MediaPlayerState.IDLE
+                # A late NET status can arrive after the receiver reports standby.
+                # Keep the power state authoritative while still updating NET metadata.
+                if self.state is not MediaPlayerState.OFF:
+                    if net_status.playback_state == "playing":
+                        self._attr_state = MediaPlayerState.PLAYING
+                    elif net_status.playback_state == "paused":
+                        self._attr_state = MediaPlayerState.PAUSED
+                    elif net_status.playback_state in ("stopped", "ended"):
+                        self._attr_state = MediaPlayerState.IDLE
                 if net_status.repeat_mode is not None:
                     self._attr_repeat = (
                         RepeatMode.ALL
