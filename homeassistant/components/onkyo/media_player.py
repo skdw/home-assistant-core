@@ -8,7 +8,10 @@ import logging
 from datetime import timedelta
 from enum import StrEnum
 from functools import cached_property
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
+
+import aiohttp
 
 from aioonkyo import Code, Kind, Status, Zone, command, query, status
 
@@ -21,6 +24,7 @@ from homeassistant.components.media_player import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 from homeassistant.util.hass_dict import HassKey
@@ -245,6 +249,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
     _query_state_task: asyncio.Task | None = None
     _query_av_info_task: asyncio.Task | None = None
     _query_net_info_task: asyncio.Task | None = None
+    _media_image_task: asyncio.Task | None = None
 
     @cached_property
     def media_image_url(self) -> str | None:
@@ -268,24 +273,27 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         return None
 
     async def async_get_media_image(self) -> tuple[bytes | None, str | None]:
-        """Fetch media image of current playing image."""
-        if (url := self.media_image_url) is None:
-            return None, None
+        """Return the verified media image bytes cached from the receiver."""
+        return self._media_image
 
-        return await self._async_fetch_image_from_cache(url)
-
-    def _update_media_image_url(self) -> None:
-        """Set a cache-busted URL to the receiver's current album art."""
-        metadata = (
-            self._attr_media_artist,
-            self._attr_media_album_name,
-            self._attr_media_title,
-        )
-        if any(metadata):
-            cache_key = _url_hash("\0".join(value or "" for value in metadata))
-            image_url = f"http://{self._manager.info.ip}/album_art.cgi?t={cache_key}"
+    def _set_media_image(
+        self,
+        content: bytes | None,
+        content_type: str | None,
+        *,
+        write_state: bool = True,
+    ) -> None:
+        """Update cached image bytes and media_image_url."""
+        self._media_image = (content, content_type)
+        if content:
+            image_hash = hashlib.sha256(content).hexdigest()
+            image_url: str | None = (
+                f"http://{self._manager.info.ip}/album_art.cgi?t={image_hash}"
+            )
+            self._attr_media_image_hash = image_hash
         else:
             image_url = None
+            self.__dict__.pop("_attr_media_image_hash", None)
 
         if image_url == self._attr_media_image_url:
             return
@@ -294,6 +302,59 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         self._attr_media_image_remotely_accessible = False
         self.__dict__.pop("media_image_url", None)
         self.__dict__.pop("media_image_remotely_accessible", None)
+        if write_state:
+            self.async_write_ha_state()
+
+    def _update_media_image_url(self) -> None:
+        """Schedule an async fetch of the receiver's current album art."""
+        if self._media_image_task is not None:
+            self._media_image_task.cancel()
+            self._media_image_task = None
+
+        metadata = (
+            self._attr_media_artist,
+            self._attr_media_album_name,
+            self._attr_media_title,
+        )
+        if not any(metadata):
+            self._set_media_image(None, None, write_state=False)
+            return
+
+        self._media_image_task = asyncio.create_task(self._async_fetch_album_art())
+
+    async def _async_fetch_album_art(self) -> None:
+        """Fetch album_art.cgi with retries for DLNA transition delay."""
+        url = f"http://{self._manager.info.ip}/album_art.cgi"
+        session = async_get_clientsession(self.hass)
+
+        for attempt in range(4):
+            if attempt > 0:
+                await asyncio.sleep(1.5)
+            try:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
+                    if response.status == HTTPStatus.OK:
+                        body = await response.read()
+                        content_type = (
+                            response.headers.get("Content-Type", "")
+                            .split(";")[0]
+                            .strip()
+                        )
+                        if (
+                            len(body) > 64
+                            and content_type.startswith("image/")
+                            and body.startswith(b"\xff\xd8\xff")
+                            and body.endswith(b"\xff\xd9")
+                        ):
+                            self._set_media_image(body, content_type)
+                            self._media_image_task = None
+                            return
+            except (TimeoutError, aiohttp.ClientError):
+                pass
+
+        self._set_media_image(None, None)
+        self._media_image_task = None
 
     def __init__(
         self,
@@ -354,6 +415,8 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         self._attr_media_album_name = None
         self._attr_media_image_url = None
         self._attr_media_image_remotely_accessible = False
+        self._media_image: tuple[bytes | None, str | None] = (None, None)
+        self._media_image_task = None
         self._attr_media_position = None
         self._attr_media_position_updated_at = None
         self._attr_media_duration = None
@@ -411,6 +474,9 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
         if self._query_net_info_task is not None:
             self._query_net_info_task.cancel()
             self._query_net_info_task = None
+        if self._media_image_task is not None:
+            self._media_image_task.cancel()
+            self._media_image_task = None
 
     async def async_turn_on(self) -> None:
         """Turn the media player on."""
@@ -669,6 +735,7 @@ class OnkyoMediaPlayer(MediaPlayerEntity):
                 if self.state is not MediaPlayerState.OFF:
                     if net_status.playback_state == "playing":
                         self._attr_state = MediaPlayerState.PLAYING
+                        self._update_media_image_url()
                     elif net_status.playback_state == "paused":
                         self._attr_state = MediaPlayerState.PAUSED
                     elif net_status.playback_state in ("stopped", "ended"):
